@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# This pre-commit hook has been updated to prevent aws-secret keys to be accidentally committed
+# The script also allows removing the file from commit with a comment "// warn-before-commit"
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+    against=HEAD
+else
+    # Initial commit: diff against an empty tree object
+    EMPTY_TREE=$(git hash-object -t tree /dev/null)
+    against=$EMPTY_TREE
+fi
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Check changed files for an AWS keys
+FILES=$(git diff --cached --name-only --diff-filter=ACMRTUXB $against)
+
+# regexps taken from https://github.com/awslabs/git-secrets/blob/80230afa8c8bdeac766a0fece36f95ffaa0be778/git-secrets#L233-L242
+
+AWS_RE="(AWS|aws|Aws)?_?"
+QUOTE_RE="(\"|')"
+OPT_QUOTE_RE="${QUOTE_RE}?"
+CONNECT_RE="\s*(:|=>|=)\s*"
+
+AWS_SECRET_RE="${OPT_QUOTE_RE}${AWS_RE}(SECRET|secret|Secret)?_?(ACCESS|access|Access)?_?(KEY|key|Key)${OPT_QUOTE_RE}${CONNECT_RE}${OPT_QUOTE_RE}[A-Za-z0-9/\+=]{40}${OPT_QUOTE_RE}"
+
+if [ -n "$FILES" ]; then
+    KEY_ID=$(grep -E --with-filename --line-number '\b[A-Z0-9]{20}\b' $FILES)
+    KEY=$(grep -E --with-filename --line-number $AWS_SECRET_RE $FILES)
+    FILE=$(grep -El --with-filename '\b[A-Z0-9]{20}\b' $FILES)
+
+    top_level_path="$(git rev-parse --show-toplevel)";
+
+    if [ -n "$KEY_ID" ] || [ -n "$KEY" ]; then
+        echo "[AWS Key Check] Possible AWS keys found in the file $KEY $KEY_ID"
+        git reset $FILE;
+        echo "File $FILE, was not commited because AWS Keys found"
+    fi
+fi
+
+while read file_name; do
+    if grep -q "// warn-before-commit" "$top_level_path/$file_name"; then
+        git reset $file_name;
+        echo "File $file_name, was not commited because 'warn-before-commit' string was found."
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+# Normal exit
+exit 0
